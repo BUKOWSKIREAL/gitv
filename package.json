@@ -1,0 +1,8 @@
+{
+  "name": "gitv",
+  "version": "0.1.0",
+  "description": "Visualize a git repository from its raw files and bytes",
+  "type": "commonjs",
+  "bin": { "gitv": "bin/gitv.js" },
+  "license": "MIT"
+}

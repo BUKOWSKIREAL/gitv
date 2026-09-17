@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>gitv</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="bar">
+  <span id="repo"></span>
+  <span id="stats"></span>
+  <span id="live"><i></i>watching</span>
+</header>
+<svg id="svg">
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#64748b"></path>
+    </marker>
+    <marker id="arrB" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#2563eb"></path>
+    </marker>
+  </defs>
+  <g id="vp"><g id="zones"></g><g id="edges"></g><g id="nodes"></g></g>
+</svg>
+<div id="legend"></div>
+<div id="drawer" class="hidden"></div>
+<script src="app.js"></script>
+</body>
+</html>
