@@ -4,5 +4,7 @@
   "description": "Visualize a git repository from its raw files and bytes",
   "type": "commonjs",
   "bin": { "gitv": "bin/gitv.js" },
+  "engines": { "node": ">=22" },
+  "scripts": { "test": "node --test" },
   "license": "MIT"
 }

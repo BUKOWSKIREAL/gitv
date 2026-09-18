@@ -7,6 +7,7 @@ const zonesG = document.getElementById('zones');
 const edgesG = document.getElementById('edges');
 const nodesG = document.getElementById('nodes');
 const drawer = document.getElementById('drawer');
+const notice = document.getElementById('notice');
 const SVGNS = 'http://www.w3.org/2000/svg';
 
 const el = (t, attrs, parent) => {
@@ -17,7 +18,7 @@ const el = (t, attrs, parent) => {
 };
 const txt = (t, s) => { const e = document.createTextNode(s); t.appendChild(e); return t; };
 const short = s => s.slice(0, 7);
-const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 /* ---------------- state ---------------- */
 
@@ -26,6 +27,8 @@ const nodes = new Map();   // id -> node {id,kind,x,y,w,h,el,body,def,pinned}
 const edgeEls = new Map(); // key -> path el
 let edges = [];            // {a,b,k,key}
 let selected = null;
+let detailSeq = 0;      // bumped per openDetail/closeDrawer to drop stale responses
+let transientMsg = null; // one-off notice (SSE error, startup failure) until next state
 const view = { x: 0, y: 0, k: 1 };
 
 /* ---------------- defs from state ---------------- */
@@ -272,14 +275,37 @@ function renderBody(n) {
   }
 }
 
+// only ghost when reachability is fully computed — a partial graph can't assert unreachable
+const ghosted = n =>
+  !!(n.def.obj && !n.def.obj.reachable && (!state || state.reachabilityComplete !== false));
+
+/* compact status pill in the header: index problems, partial graph, backend
+ * warnings, transient errors. Written via textContent — always escaped. */
+function renderNotices() {
+  const msgs = [];
+  if (state) {
+    if (state.index && state.index.error) msgs.push('index: ' + state.index.error);
+    if (state.reachabilityComplete === false) msgs.push('partial graph — reachability incomplete');
+    if (Array.isArray(state.warnings))
+      for (const w of state.warnings) msgs.push(String(w && (w.message || w.error || w)));
+  }
+  if (transientMsg) msgs.push(transientMsg);
+  notice.textContent = msgs.join(' · ');
+}
+function showMsg(m) {
+  transientMsg = String(m && (m.message || m.error || m));
+  renderNotices();
+}
+
 function ensureNodeEl(n) {
-  const sig = n.id + '|' + JSON.stringify(n.def).length + '|' + (n.def.lines || []).join('') + (n.def.obj ? n.def.obj.size : '');
+  // sig over full rendered content (tx/ty are layout output, not content)
+  const sig = n.id + '|' + JSON.stringify(n.def, (k, v) => k === 'tx' || k === 'ty' ? undefined : v);
   if (n.el) { if (n.sig !== sig) { n.sig = sig; renderBody(n); } return; }
   n.sig = sig;
   const g = el('g', { class: 'n', 'data-id': n.id }, nodesG);
   const b = el('g', { class: 'b' }, g);
   n.el = g; n.body = b;
-  if (n.def.obj && !n.def.obj.reachable) g.classList.add('ghost');
+  if (ghosted(n)) g.classList.add('ghost');
   renderBody(n);
   g.addEventListener('pointerdown', e => startDrag(e, n));
   g.addEventListener('click', e => {
@@ -327,13 +353,76 @@ function renderZones() {
   }
 }
 
+/* n.x/n.y is the single rendered position shared by the node transform and
+ * edge endpoints. Unpinned nodes tween toward layout targets n.tx/n.ty here
+ * (same duration/easing as the old CSS transition) so edges stay glued every
+ * frame — a CSS transform transition would move nodes without moving edges. */
+const MOVE_MS = 550;
+const moveEase = cubicBezier(.4, 0, .2, 1);
+let rafId = 0;
+
+function cubicBezier(x1, y1, x2, y2) {
+  const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
+  const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+  const X = t => ((ax * t + bx) * t + cx) * t;
+  const Y = t => ((ay * t + by) * t + cy) * t;
+  const dX = t => (3 * ax * t + 2 * bx) * t + cx;
+  return u => {
+    if (u <= 0) return 0;
+    if (u >= 1) return 1;
+    let t = u;
+    for (let i = 0; i < 8; i++) {
+      const e = X(t) - u;
+      if (Math.abs(e) < 1e-6) return Y(t);
+      const d = dX(t);
+      if (Math.abs(d) < 1e-6) break;
+      t -= e / d;
+    }
+    let lo = 0, hi = 1;
+    t = u;
+    while (hi - lo > 1e-6) {
+      const v = X(t);
+      if (Math.abs(v - u) < 1e-6) return Y(t);
+      if (u < v) hi = t; else lo = t;
+      t = (lo + hi) / 2;
+    }
+    return Y(t);
+  };
+}
+
+function kick() {
+  if (!rafId && typeof requestAnimationFrame === 'function')
+    rafId = requestAnimationFrame(animate);
+}
+
+function animate() {
+  rafId = 0;
+  const now = performance.now();
+  let more = false;
+  for (const n of nodes.values()) {
+    const a = n.anim;
+    if (!a) continue;
+    const t = Math.min(1, (now - a.t0) / MOVE_MS);
+    const e = moveEase(t);
+    n.x = a.x0 + (a.x1 - a.x0) * e;
+    n.y = a.y0 + (a.y1 - a.y0) * e;
+    n.el.style.transform = `translate(${n.x}px,${n.y}px)`;
+    if (t < 1) more = true; else n.anim = null;
+  }
+  renderEdges();
+  if (more) kick();
+}
+
 function render() {
   renderZones();
+  const now = performance.now();
   for (const n of nodes.values()) {
     ensureNodeEl(n);
-    n.el.classList.toggle('ghost', !!(n.def.obj && !n.def.obj.reachable));
-    const x = n.pinned ? n.x : n.tx, y = n.pinned ? n.y : n.ty;
-    n.el.style.transform = `translate(${x}px,${y}px)`;
+    n.el.classList.toggle('ghost', ghosted(n));
+    if (!n.pinned && (n.x !== n.tx || n.y !== n.ty))
+      n.anim = { x0: n.x, y0: n.y, x1: n.tx, y1: n.ty, t0: now };
+    else n.anim = null;
+    n.el.style.transform = `translate(${n.x}px,${n.y}px)`;
     if (n.isNew) {
       n.isNew = false;
       n.body.parentNode.classList.add('enter');
@@ -342,6 +431,7 @@ function render() {
     n.settled = true;
   }
   renderEdges();
+  kick();
 }
 
 /* ---------------- apply state / reconcile ---------------- */
@@ -387,6 +477,9 @@ function applyState(s, changes) {
 
   render();
 
+  transientMsg = null;
+  renderNotices();
+
   document.getElementById('repo').textContent = s.repoPath.split('/').pop();
   const c = s.counts;
   document.getElementById('stats').textContent =
@@ -404,7 +497,7 @@ function applyState(s, changes) {
 function fitView() {
   let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
   for (const n of nodes.values()) {
-    const x = n.tx ?? n.x, y = n.ty ?? n.y;
+    const x = n.pinned ? n.x : (n.tx ?? n.x), y = n.pinned ? n.y : (n.ty ?? n.y);
     minX = Math.min(minX, x - n.def.w); maxX = Math.max(maxX, x + n.def.w);
     minY = Math.min(minY, y - n.def.h); maxY = Math.max(maxY, y + n.def.h);
   }
@@ -461,6 +554,7 @@ function startDrag(e, n) {
   dragging = n;
   n.el.classList.add('drag');
   n.pinned = true;
+  n.anim = null;
   const p = toWorld(e);
   n.x = p.x; n.y = p.y;
   const move = ev => {
@@ -529,13 +623,37 @@ function stepHtml(st) {
   return '';
 }
 
+function showDrawer(head, steps, extra = '') {
+  drawer.innerHTML = `<div class="d-head">${head}<span class="d-x">×</span></div>` +
+    `<div class="steps">${steps}</div>` + extra;
+  drawer.classList.remove('hidden');
+  drawer.querySelector('.d-x').onclick = closeDrawer;
+  drawer.querySelectorAll('a[data-sha]').forEach(a =>
+    a.addEventListener('click', () => openDetail(a.dataset.sha)));
+}
+
 async function openDetail(id) {
+  const seq = ++detailSeq;
   selected = id;
   for (const n of nodes.values()) n.el.classList.toggle('sel', n.id === id);
-  const d = await (await fetch('/api/detail?id=' + encodeURIComponent(id))).json();
+  let d;
+  try {
+    const r = await fetch('/api/detail?id=' + encodeURIComponent(id));
+    d = await r.json();
+    if (!r.ok && !(d && d.error)) d = { error: 'HTTP ' + r.status };
+  } catch (e) {
+    d = { error: 'detail unavailable: ' + String(e && e.message || e) };
+  }
+  if (seq !== detailSeq || selected !== id) return; // superseded or drawer closed
+  if (!d || typeof d !== 'object') d = { error: 'empty detail' };
+  if (d.error) {
+    showDrawer(`<span class="d-type err">error</span><span class="d-sha">${esc(id)}</span>`,
+      `<div class="step"><div class="st-t">error</div><div class="pre">${esc(String(d.error))}</div></div>`);
+    return;
+  }
   let head = '';
   if (d.sha) {
-    const o = state.objects.find(x => x.sha === d.sha);
+    const o = state && state.objects.find(x => x.sha === d.sha);
     head = `<span class="d-type ${d.type}">${d.type}</span><span class="d-sha">${d.sha}</span>` +
       `<span class="d-note">${d.size} bytes</span>` +
       (o && !o.reachable ? `<span class="d-note unreach">unreachable</span>` : '') +
@@ -549,14 +667,10 @@ async function openDetail(id) {
       (d.bodyText.binary ? `<div class="hexdump">${esc(d.bodyText.hex)}</div>`
                         : `<div class="pre">${esc(d.bodyText.text)}${d.bodyText.truncated ? '\n…' : ''}</div>`) + '</div>';
   }
-  drawer.innerHTML = `<div class="d-head">${head}<span class="d-x">×</span></div>` +
-    `<div class="steps">${steps}</div>` + extra;
-  drawer.classList.remove('hidden');
-  drawer.querySelector('.d-x').onclick = closeDrawer;
-  drawer.querySelectorAll('a[data-sha]').forEach(a =>
-    a.addEventListener('click', () => openDetail(a.dataset.sha)));
+  showDrawer(head, steps, extra);
 }
 function closeDrawer() {
+  detailSeq++;
   drawer.classList.add('hidden');
   selected = null;
   for (const n of nodes.values()) n.el.classList.remove('sel');
@@ -573,15 +687,31 @@ document.getElementById('legend').innerHTML =
   '<span><i style="background:#fefce8;border:1px solid #ca8a04"></i>index</span>' +
   '<span><i style="background:#fff;border:1px solid #f59e0b"></i>workdir</span>';
 
+const validState = s => !!(s && !s.loading && !s.error && Array.isArray(s.objects));
+
 (async () => {
-  const s = await (await fetch('/api/state')).json();
-  applyState(s, null);
+  try {
+    const r = await fetch('/api/state');
+    const s = await r.json().catch(() => null);
+    if (r.ok && validState(s)) applyState(s, null);
+    else if (s && s.error) showMsg(s.error);
+    else showMsg(r.ok ? 'loading repository…' : `loading repository… (HTTP ${r.status})`);
+  } catch (e) {
+    showMsg('state unavailable: ' + String(e && e.message || e));
+  }
   if (location.hash.length > 1) openDetail(decodeURIComponent(location.hash.slice(1)));
   const es = new EventSource('/events');
   es.onmessage = e => {
     const m = JSON.parse(e.data);
-    if (m.type === 'state') applyState(m.state, m.changes);
+    if (m.type === 'state') {
+      const s = m.state;
+      if (s && s.error) showMsg(s.error);
+      else if (validState(s)) applyState(s, m.changes);
+      // null/loading state messages are ignored — a later push brings the real state
+    } else if (m.type === 'error') {
+      showMsg(m.message || m.error || 'backend error');
+    }
   };
-  es.onerror = () => document.getElementById('live').classList.add('dead');
+  es.onerror = () => { document.getElementById('live').classList.add('dead'); showMsg('live connection lost'); };
   es.onopen = () => document.getElementById('live').classList.remove('dead');
 })();

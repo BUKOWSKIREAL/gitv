@@ -13,6 +13,12 @@ body {
 }
 #repo { font-weight: 600; font-size: 14px; }
 #stats { color: #64748b; font-size: 12px; font-family: ui-monospace, monospace; }
+#notice {
+  font-size: 11px; color: #92400e; background: #fffbeb;
+  border: 1px solid #fde68a; border-radius: 8px; padding: 2px 9px;
+  max-width: 42vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#notice:empty { display: none; }
 #live { margin-left: auto; color: #16a34a; font-size: 11px; display: flex; align-items: center; gap: 6px; }
 #live i { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; animation: blink 2s infinite; }
 #live.dead { color: #dc2626; } #live.dead i { background: #dc2626; animation: none; }
@@ -41,11 +47,13 @@ body {
 @keyframes eflash { 0%,60% { stroke-width: 4; filter: drop-shadow(0 0 4px #f59e0b); } }
 
 /* nodes */
-.n { transition: transform .55s cubic-bezier(.4,0,.2,1); cursor: pointer; }
-.n.drag { transition: none; cursor: grabbing; }
+/* node motion is JS-interpolated (RAF) so edges track every frame — no
+ * transform transition here, it would let nodes drift away from edges */
+.n { cursor: pointer; }
+.n.drag { cursor: grabbing; }
 .n .b { transform-box: fill-box; transform-origin: center; }
 .n.enter .b { animation: pop .5s cubic-bezier(.2,1.5,.4,1); }
-.n.exit { opacity: 0 !important; transition: opacity .4s, transform .55s; }
+.n.exit { opacity: 0 !important; transition: opacity .4s; }
 .n.exit .b { transform: scale(.3); transition: transform .4s; }
 @keyframes pop { 0% { transform: scale(0); } 100% { transform: scale(1); } }
 .n.ghost { opacity: .38; }
@@ -107,6 +115,7 @@ body {
 #drawer.hidden { transform: translateY(105%); }
 .d-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
 .d-type { font: 700 11px -apple-system, system-ui; color: #fff; background: #0f172a; padding: 3px 9px; border-radius: 6px; }
+.d-type.err { background: #b91c1c; }
 .d-type.commit { background: #b45309; } .d-type.tree { background: #059669; }
 .d-type.blob { background: #475569; } .d-type.tag { background: #7e22ce; }
 .d-sha { font: 12px ui-monospace, monospace; color: #0f172a; }
